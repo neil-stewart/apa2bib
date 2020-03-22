@@ -1,0 +1,574 @@
+#!/usr/bin/perl -w 
+# Convert an APA formatted reference to a bibtex entry
+# Version 1.0.5
+# Copyright 2008-2012 Neil Stewart
+# The program is distributed under the terms of the GNU General Public License
+#
+# apa2bib is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.
+#
+# apa2bib is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.
+#
+# <http://www.gnu.org/licenses/>
+#
+# 1.0.1 corrected "&> /dev/null" redirects, which only work in bash, to 
+# "> /dev/null 2> /dev/null" which works in dash too
+#
+# 1.0.2 Code from Tim Kelly added to deal with issue numbers (thanks!)
+#
+# 1.0.3 More code from Tim to deal with DOIs, though the --no-check flag is
+# needed as apa6.cls can't do DOIs. Also, updated to use APA6 for the latex
+# checking, which might allow another referencing package other than apacite
+# to support DOIs
+#
+# 1.0.4 Fix problems with books missing DOIs. Now DOIs work with APA6
+#
+# 1.0.5 Fix in apa2bib_process for error checking on Mac OS X. Thanks Tim!
+
+use Cwd 'abs_path';
+use File::Basename;
+use Getopt::Long;
+
+# Command line parameters
+$nocheck = 0;
+$help    = 0;
+GetOptions( "no-check" => \$nocheck, "help" => \$help );
+
+if ($help) {
+    print( "apa2bib receives APA formatted text references from stdin and sends bibtex formatted entries to stdout\n\n" );
+    print("Options:\n");
+    print(" --help      displays this message\n");
+    print(" --no-check  disables error checking\n\n");
+    print("Examples:\n");
+    print( "echo \"Stewart, N., Chater, N., & Brown, G. D. A. (2006). Decision by sampling. Cognitive Psychology, 53, 1-26.\" | apa2bib\n" );
+    print("apa2bib < APA_formatted_references.txt > bibtex_entries.bib\n");
+    exit(0);
+}
+
+while ( defined( my $line = <STDIN> ) ) {
+    chomp($line);
+
+    my $key = "";
+    my $bib = "";
+
+    #	system("make clean &> /dev/null");
+
+    ( $key, $bib ) = &parseReference($line);
+
+    if ( $key && $bib ) {
+        if ($nocheck) {
+            print( $bib, "\n" );
+        }
+        else {
+            &makeBib($bib);
+            &makeTex($key);
+            if ( &check($line) ) {
+                print( $bib, "\n" );
+            }
+            else {
+                print( "RAW:		  ", $line, "\n" );
+                print( $bib, "\n" );
+            }
+        }
+    }
+    else {
+        print( "UNCAUGHT:	  ", $line, "\n" );
+        print( "Reference does not match any of the regular expressions. Is it APA formatted properly?\n\n" );
+    }
+}
+
+sub parseReference {
+    my $line = $_[0];
+    $line = &deleteWhiteSpace($line);
+    my ( $ref, $notes ) = &parseNotes($line);
+
+    # Segment the reference
+    my ( $type, $author, $editor, $date, $title, $booktitle, $journal, $volume, $number, $edition, $firstpage, $lastpage, $address, $publisher, $howpublished );
+    if ( $ref =~ /(.+) \((\d{4})\)\. (.+)([\.|\?]) In (.+) \(Eds?.\), (.+) \(V?o?l?\.? ?(.*?),? pp. ([a-zA-Z]*[0-9]+)-([a-zA-Z]*[0-9]+)\). (.+): (.+)\.( doi:( )?.+)/ ) {
+
+        # Segment a book chapter with a volume
+        $author    = $1;
+        $date      = $2;
+        $title     = $3;
+        $editor    = $5;
+        $booktitle = $6;
+        $volume    = $7;
+        $firstpage = $8;
+        $lastpage  = $9;
+        $address   = $10;
+        $publisher = $11;
+        $doi = $12;
+        
+        if ( $4 eq "?" ) {
+            $title .= "?";    # If title ended in "?" add it to the title variable
+        }
+        $type = "incollection";
+    }
+    elsif ( $ref =~ /(.+) \((\d{4})\)\. (.+)([\.|\?]) In (.+) \(Eds?.\), (.+) \(pp. ([a-zA-Z]* ?[0-9]+)-([a-zA-Z]*[0-9]+)\). (.+): (.+)\.( doi:( )?.+)/ ) {
+
+        # Segment a book chapter without a volume
+        $author    = $1;
+        $date      = $2;
+        $title     = $3;
+        $editor    = $5;
+        $booktitle = $6;
+        $firstpage = $7;
+        $lastpage  = $8;
+        $address   = $9;
+        $publisher = $10;
+        $doi = $11;
+        
+        if ( $4 eq "?" ) {
+            $title .= "?";    # If title ended in "?" add it to the title variable
+        }
+        $type = "incollection";
+    }
+
+    elsif ( $ref =~ /(.+) \((\d{4})\)\. (.+)([\.|\?]) (.+), ([0-9]*[A-Z]*)\(?([a-zA-Z]* ?[0-9]+)?\)?, ([a-zA-Z]*[0-9]+)-([a-zA-Z]*[0-9]+)\.( doi:( )?.+)?/ ) {
+
+        # Segment a journal article from a volume with number
+        $author    = $1;
+        $date      = $2;
+        $title     = $3;
+        $journal   = $5;
+        $volume    = $6;
+        $number   = $7;
+        $firstpage = $8;
+        $lastpage  = $9;
+       	$doi = $10;
+
+        # If title ended in "?" add it to the title variable
+        if ( $4 eq "?" ) {
+            $title .= "?";
+        }
+        $type = "article";    
+        
+    }
+    elsif ( $ref =~ /(.+) \((\d{4})\)\. (.+)([\.|\?]) (.+), ([0-9]*[A-Z]*)\(?([a-zA-Z]* ?[0-9]+)?\)?, ([a-zA-Z]*[0-9]+)\.( doi:( )?.+)?/ ) {
+
+        # Segment a journal article with only one page
+        $author    = $1;
+        $date      = $2;
+        $title     = $3;
+        $journal   = $5;
+        $volume    = $6;
+        $number    = $7;
+        $firstpage = $8;
+        $doi = $9;
+        
+        # If title ended in "?" add it to the title variable
+        if ( $4 eq "?" ) {
+            $title .= "?";
+        }
+        $type = "article";
+    }
+    
+    elsif ( $ref =~ /(.+) \((\d{4}.+)\)\. (.+)([\.|\?]) (.+), ([0-9]*[A-Z]*)\(?([a-zA-Z]* ?[0-9]+)?\)?, ([a-zA-Z]*[0-9]+)-([a-zA-Z]*[0-9]+)\.( doi:( )?.+)/ ) {
+
+        # Segment a journal article with month and day
+        $author    = $1;
+        $date      = $2;
+        $title     = $3;
+        $journal   = $5;
+        $volume    = $6;
+        $number    = $7;
+        $firstpage = $8;
+        $lastpage  = $9;
+        $doi = $10;
+
+        # If title ended in "?" add it to the title variable
+        if ( $4 eq "?" ) {
+            $title .= "?";
+        }
+        $type = "magazine";
+    }
+    elsif ( $ref =~ /(.+) \((\d{4}.+)\)\. (.+)([\.|\?]) (.+), ([0-9]*[A-Z]*)\(?([a-zA-Z]* ?[0-9]+)?\)?, ([a-zA-Z]*[0-9]+)\.( doi:( )?.+)/ ) {
+
+        # Segment a journal article with month and day and only one page
+        $author    = $1;
+        $date      = $2;
+        $title     = $3;
+        $journal   = $5;
+        $volume    = $6;
+        $number    = $7;
+        $firstpage = $8;
+        $doi =$9;
+
+        # If title ended in "?" add it to the title variable
+        if ( $4 eq "?" ) {
+            $title .= "?";
+        }
+        $type = "magazine";
+    }
+    elsif ( $ref =~ /(.+) \(in press\)\. (.+)([\.|\?]) (.+)./ ) {
+
+        # Segment an in-press article
+        $author  = $1;
+        $title   = $2;
+        $journal = $4;
+        $date    = "in press";
+
+        # If title ended in "?" add it to the title variable
+        if ( $3 eq "?" ) {
+            $title .= "?";
+        }
+        $type = "article";
+    }
+    elsif ( $ref =~ /(.+) \((\d{4})\)\. (.+)([\.|\?]) Manuscript submitted for publication./ ) {
+
+        # Segment a submitted manuscript
+        $author = $1;
+        $date   = $2;
+        $title  = $3;
+
+        # If title ended in "?" add it to the title variable
+        if ( $4 eq "?" ) {
+            $title .= "?";
+        }
+        $type         = "unpublished";
+        $howpublished = "Manuscript submitted for publication";
+    }
+    elsif ( $ref =~ /(.+) \((\d{4})\)\. (.+)([\.|\?]) Unpublished manuscript./ ) {
+
+        # Segment an unpublished manuscript
+        $author = $1;
+        $date   = $2;
+        $title  = $3;
+
+        # If title ended in "?" add it to the title variable
+        if ( $4 eq "?" ) {
+            $title .= "?";
+        }
+        $type         = "unpublished";
+        $howpublished = "Unpublished manuscript";
+    }
+    elsif ( $ref =~ /(.+) \(Eds?.\). \((\d{4})\)\. (.+)([\.|\?]) (.+): (.+)\.( doi:( )?.+)/ ) {
+
+        # Segment an edited book without edition (need to be before book and book with edition)
+        $editor    = $1;
+        $date      = $2;
+        $title     = $3;
+        $address   = $5;
+        $publisher = $6;
+          $doi = $7;
+
+        # If title ended in "?" add it to the title variable
+        if ( $4 eq "?" ) {
+            $title .= "?";
+        }
+        $type = "book";
+    }
+    elsif ( $ref =~ /(.+) \((\d{4})\)\. (.+) \((.+) ed\.\)\. (.+): (.+)\.( doi:( )?.+)/ ) {
+
+        # Segment a book with edition
+        $author    = $1;
+        $date      = $2;
+        $title     = $3;
+        $edition   = $4;
+        $address   = $5;
+        $publisher = $6;
+        $doi = $7;
+        
+        $type      = "book";
+    }
+    elsif ( $ref =~ /(.+) \((\d{4})\)\. (.+)([\.|\?]) (.+): (.+)\.( doi:( )?.+)?/ ) {
+
+        # Segment a book without edition
+        $author    = $1;
+        $date      = $2;
+        $title     = $3;
+        $address   = $5;
+        $publisher = $6;
+        $doi = $7;
+
+        # If title ended in "?" add it to the title variable
+        if ( $4 eq "?" ) {
+            $title .= "?";
+        }
+        $type = "book";
+    }
+    else {
+        return ( "", "" );
+    }
+
+    # Prepare the fields
+    if ($author) { $author = &formatAuthor($author); }
+    if ($editor) {
+        if ( $type eq "book" ) {
+            $editor = &formatAuthor($editor);
+        }
+        else {
+            $editor = &formatEditors($editor);
+        }
+    }
+    my ( $year, $originalyear, $month, $shortmonth, $day ) = &formatYear($date);
+    if ($title) {
+        $title = &protectCapitals($title);
+        $title = &protectAmpersand($title);
+        $title = &formatDashes($title);
+    }
+    if ($booktitle) {
+        $booktitle = &protectCapitals($booktitle);
+        $booktitle = &protectAmpersand($booktitle);
+    }
+    if ($journal)   { $journal   = &protectAmpersand($journal); }
+    if ($publisher) { $publisher = &protectAmpersand($publisher); }
+    if (defined $doi) { $doi =~ s/ doi:( )?//; }
+    my $key;
+    if ($author) {
+        $key = &makeKey( $author, $date );
+    }
+    else {
+        $key = &makeKey( $editor, $date );
+    }
+
+    # Make BIB entry
+    my $bib = "\@" . $type . "{" . $key . ",\n";
+    if ($author) { $bib .= "author\t=\t{" . $author . "},\n"; }
+    if ($year)   { $bib .= "year\t=\t{" . $year . "},\n"; }
+    if ($month)  { $bib .= "month\t=\t" . $shortmonth . ",\n"; }
+    if ($day)    { $bib .= "day\t=\t{" . $day . "},\n"; }
+    if ($originalyear) {
+        $bib .= "originalyear\t=\t{" . $originalyear . "},\n";
+    }
+    if ($editor)    { $bib .= "editor\t=\t{" . $editor . "},\n"; }
+    if ($title)     { $bib .= "title\t=\t{" . $title . "},\n"; }
+    if ($journal)   { $bib .= "journal\t=\t{" . $journal . "},\n"; }
+    if ($booktitle) { $bib .= "booktitle\t=\t{" . $booktitle . "},\n"; }
+    if ($edition)   { $bib .= "edition\t=\t{" . $edition . "},\n"; }
+    if ($volume)    { $bib .= "volume\t=\t{" . $volume . "},\n"; }
+    if ($number)    { $bib .= "number\t=\t{" . $number . "},\n"; }
+
+    if ( $firstpage && $lastpage ) {
+        $bib .= "pages\t=\t{" . $firstpage . "--" . $lastpage . "},\n";
+    }
+    elsif ($firstpage) {
+        $bib .= "pages\t=\t{" . $firstpage . "},\n";
+    }
+    if ($address)   { $bib .= "address\t=\t{" . $address . "},\n"; }
+    if ($publisher) { $bib .= "publisher\t=\t{" . $publisher . "},\n"; }
+    if ($howpublished) {
+        $bib .= "howpublished\t=\t{" . $howpublished . "},\n";
+    }
+    if ($notes) { $bib .= "custom\t=\t{" . $notes . "},\n"; }
+    if ($doi) { 
+    	$bib .= "doi\t=\t{" . $doi . "},\n"; #,\nurl\t=\t{http://dx.doi.org/" . $doi ."},\n"; 
+    }
+    $bib .= "}\n";
+
+    ( $key, $bib );
+}
+
+sub parseNotes {
+    my $line = $_[0];
+    my ( $ref, $notes );
+    $line = &deleteWhiteSpace($line);
+    if ( $line =~ /\*/ || $line =~ /[\{\}]/ ) {
+        $line =~ /(.+) *(\*.*)/;
+        $ref   = &deleteWhiteSpace($1);
+        $notes = $2;
+    }
+    else {
+        $ref   = $line;
+        $notes = "";
+    }
+    $ref, $notes;
+}
+
+sub deleteWhiteSpace {
+    my $line = $_[0];
+    $line =~ s/\s+$//;
+    $line;
+}
+
+sub formatAuthor {
+    my $author = $_[0];
+
+    # Separate authors with ands
+    $author =~ s/\., & /\., /;
+    $author =~ s/\., Jr./\.,_Jr./g;    # Project "Jr." from separation from name
+    $author =~ s/\., /\. and /g;
+    $author =~ s/\.,_Jr./\., Jr./g;    # Unproject the "Jr."s
+
+    my @names = split( / and /, $author );
+    foreach my $a (@names) {
+        $a =~ s/(.+), (.+), Jr./$1_Jr\.\\hbox{}, $2/;    # Shuffle "Jr." to right place and protect from two-part surname bracing
+        if ( $a !~ /, / ) { $a = "{" . $a . "}"; }
+        $a =~ s/(.+) (.+), (.+)/\{$1 $2\}, $3/;          # Protect two part surnames
+        $a =~ s/_Jr/, Jr/;                               # Unprotect "Jr."
+    }
+    $author = join( " and ", @names );
+    $author;
+}
+
+sub formatEditors {
+    my $editor = $_[0];
+
+    # Reverse surname and initials and separate editors with "and"
+    $editor =~ s/, & /, /;
+    $editor =~ s/ & /, /;
+    my @ednames = split( /, /, $editor );
+    foreach (@ednames) {
+        s/(.+)\. (.+)/$2, $1\./;
+    }
+    $editor = join( " and ", @ednames );
+    $editor;
+}
+
+sub formatYear {
+    my $date = $_[0];
+
+    # Segment date if it contains month and year
+    my ( $year, $originalyear, $month, $shortmonth, $day );
+    if ( $date =~ /^\d{4}[a-z]?$/ ) {
+
+        # Normal date
+        $year = $date;
+    }
+    elsif ( $date =~ /^(\d{4})\/(\d{4})$/ ) {
+
+        # Translation (e.g., 1738/1954)
+        $originalyear = $1;
+        $year         = $2;
+    }
+    elsif ( $date =~ /in press/ ) {
+
+        # In press
+        $year = "\\BIP";
+    }
+    else {
+
+        # Year, month day
+        $date =~ /(\d{4}), (.+) (\d+)/;
+        $year       = $1;
+        $month      = $2;
+        $shortmonth = lc( substr( $month, 0, 3 ) );
+        $day        = $3;
+    }
+    ( $year, $originalyear, $month, $shortmonth, $day );
+}
+
+sub protectCapitals {
+    my $title = $_[0];
+
+    # Protect any word with a capital
+    $title =~ s/(\w*[A-Z]\w*)/\{$1\}/g;
+
+    # Remove protection for words following ": " if they don't have any non-initial capitals
+    $title =~ s/: \{([A-Z][a-z]*)\}/: $1/g;
+
+    # Remove protection for first word if it doesn't have any non-initial capitals
+    $title =~ s/^\{([A-Z][a-z]*)\}/$1/;
+    $title;
+}
+
+sub formatDashes {
+    my $title = $_[0];
+    $title =~ s/ - /---/g;
+    $title;
+}
+
+sub protectAmpersand {
+    my $x = $_[0];
+    $x =~ s/&/\\&/g;
+    $x;
+}
+
+sub makeKey {
+    my ( $author, $date ) = ( $_[0], $_[1] );
+
+    # Make the article reference
+    my @names = split( / and /, $author );
+    foreach (@names) {
+        s/(.+?),.*/$1/;    # NB: +? gives the SHORTEST possible match
+    }
+    my $key = join( "", @names );
+    if ( $date eq "in press" ) {
+        $key .= "inpress";
+    }
+    else {
+        $key .= substr( $date, 2, 2 );
+    }
+    $key =~ s/\s//g;
+    $key =~ s/[\{\}]//g;
+    $key =~ s/\\.//g;
+    $key;
+}
+
+sub makeTex {
+    my $key = $_[0];
+    open( OUT, ">temp.tex" ) || die("Cannot open temp.tex");
+    print OUT <<ENDTEX;
+\\documentclass[man,12pt]{apa6}
+\\usepackage[american]{babel}
+\\usepackage{csquotes}
+\\usepackage{microtype}
+\\DisableLigatures{}
+\\bibliographystyle{apacite}
+\\usepackage{apacite}
+\\usepackage{url}
+\\title{References}
+\\shorttitle{References}
+\\author{Neil Stewart}
+\\affiliation{Warwick University}
+\\keywords{references}
+\\authornote{Author Note
+Version: \today}
+\\hyphenpenalty=10000
+\\tolerance=1000
+\\begin{document}
+\\nocite{$key}
+\\bibliography{temp.bib}
+\\end{document}
+ENDTEX
+    close OUT;
+}
+
+sub makeBib {
+    my $bib = $_[0];
+    open( OUT, ">temp.bib" ) || die("Cannot open temp.bib");
+    print OUT $bib;
+    close OUT;
+}
+
+sub check {
+    # Get the path of the apa2bib executable so that apa2bib_makefile and
+    # apa2bib_process can be located
+    my ( $apa2bibname, $apa2bibpath ) = fileparse( abs_path($0) );
+    my $apa2bib_makefile = $apa2bibpath . "apa2bib_makefile";
+    my $apa2bib_process  = $apa2bibpath . "apa2bib_process";
+    if ( !( -e $apa2bib_makefile ) ) {
+        print("Cannot find apa2bib_makefile, no error checking\n");
+        return 0;
+    }
+    if ( !( -e $apa2bib_process ) ) {
+        print("Cannot find apa2bib_process, no error checking\n");
+        return 0;
+    }
+
+    my $origline = $_[0];
+    $origline = &deleteWhiteSpace($origline);
+    my ( $origref, $orignotes ) = &parseNotes($origline);
+    system( "make -f " . $apa2bib_makefile . " > /dev/null 2> /dev/null" ) == 0
+      || return 0;
+#      || printf ("child exited with value %d\n", $?) && return 0;
+    #	system("make")==0 || die("make failed");
+    system("dvi2tty -e 200 temp.dvi > temp.txt") == 0
+      || die("dvi2tty failed");    # -e 200 puts spaces in narrow gaps and may need tweaking
+    open( PIPE, $apa2bib_process . " temp.txt |" )
+      || die("opening pipe failed");
+    my $pipe = <PIPE>;
+    close PIPE;
+    system( "make -f " . $apa2bib_makefile . " clean > /dev/null 2> /dev/null" ) == 0
+      || die("make clean failed");
+    if ( $origref ne $pipe ) {
+        print( "ORIGINAL:	  ",    $origref, "\n" );
+        print( "RECONSTRUCTED:    ", $pipe,    "\n" );
+    }
+    ( $origref eq $pipe );
+}

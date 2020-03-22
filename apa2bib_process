@@ -1,0 +1,21 @@
+#!/bin/bash
+FILENAME=$1
+# Fix using grep not perl for Mac OSX
+#LENGTH=`wc -l $FILENAME | perl -pe 's/^(\d+).*/$1/'`
+LENGTH=`wc -l $FILENAME | grep -o -E '[0-9]+[ ]'`
+REFLENGTH=$[$LENGTH-10]
+tail -n $REFLENGTH $FILENAME \
+	| perl -pe 's/\n//g' \
+	| perl -pe 's/\*\s*\*//g' \
+	| perl -pe 's/\s+/ /g' \
+	| perl -pe 's/\b- ([^a][^n][^d])/-$1/g' \
+	| perl -pe 's/_/ - /g' \
+	| perl -pe 's/ ,/,/g' \
+	| perl -pe 's/--/-/g'
+# Delete all line breaks
+# Delete line breaks from dvi2tty
+# Delete spaces after "-" except in "- and"
+# Replace large dashes with "-"
+# Delete repeated spaces
+# Delete spaces before ,
+# Replace -- with -

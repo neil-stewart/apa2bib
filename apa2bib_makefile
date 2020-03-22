@@ -1,0 +1,8 @@
+temp.dvi: temp.tex
+	latex temp
+	bibtex temp
+	latex temp
+	latex temp
+	latex temp
+make clean:
+	rm temp.aux temp.bbl temp.bib temp.blg temp.dvi temp.log temp.tex temp.txt
